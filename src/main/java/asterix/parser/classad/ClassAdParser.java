@@ -24,6 +24,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.Reader;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
@@ -84,6 +85,7 @@ import asterix.parser.classad.object.pool.OperationPool;
 import asterix.parser.classad.object.pool.TokenValuePool;
 import asterix.parser.classad.object.pool.ValuePool;
 import org.apache.asterix.runtime.operators.file.AbstractDataParser;
+import org.apache.asterix.runtime.operators.file.AsterixTupleParserFactory.InputDataFormat;
 import org.apache.asterix.runtime.operators.file.IDataParser;
 import org.apache.commons.lang3.mutable.MutableBoolean;
 import org.apache.hyracks.data.std.api.IMutableValueStorage;
@@ -118,7 +120,7 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
     private IObjectPool<IMutableValueStorage, ATypeTag> abvsBuilderPool = new ListObjectPool<IMutableValueStorage, ATypeTag>(
             new AbvsBuilderFactory());
     private AsterixSemiStructuredRecordReader recordReader;
-    private ClassAd rootAd = new ClassAd(false,true);
+    private ClassAd rootAd = new ClassAd(false, true);
     private String exprPrefix = "expr=";
     private String exprSuffix = "";
     private boolean evaluateExpr = true;
@@ -140,40 +142,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         this.currentSource = new CharArrayLexerSource();
     }
 
-    // should never be used within asterix
     public ClassAdParser() {
         this.recordType = null;
         this.currentSource = new CharArrayLexerSource();
-    }
-
-    public void configure(Map<String, String> configuration) {
-        String parserConfig = configuration.get(KEY_OLD_FORMAT);
-        if (parserConfig != null && parserConfig.equalsIgnoreCase("true")) {
-            oldFormat = true;
-            rootAd.createParser();
-        }
-        parserConfig = configuration.get(KEY_EVALUATE);
-        if (parserConfig != null && parserConfig.equalsIgnoreCase("false")) {
-            evaluateExpr = false;
-            keepBoth = false;
-        }
-        parserConfig = configuration.get(KEY_KEEP_EXPR);
-        if (parserConfig != null && parserConfig.equalsIgnoreCase("false")) {
-            keepBoth = false;
-            evaluateExpr = true;
-        }
-        parserConfig = configuration.get(KEY_EXPR_PREFIX);
-        if (parserConfig != null && parserConfig.trim().length() > 0) {
-            exprPrefix = parserConfig;
-        }
-        parserConfig = configuration.get(KEY_EXPR_SUFFIX);
-        if (parserConfig != null && parserConfig.trim().length() > 0) {
-            exprSuffix = parserConfig;
-        }
-        parserConfig = configuration.get(KEY_EXPR_NAME_SUFFIX);
-        if (parserConfig != null && parserConfig.trim().length() > 0) {
-            exprFieldNameSuffix = parserConfig;
-        }
     }
 
     /***********************************
@@ -182,13 +153,12 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
      * @throws AsterixException
      ***********************************/
     public void asterixParse(ClassAd classad, DataOutput out) throws IOException, AsterixException {
-        // we assume the lexer source used here is a char array 
+        // we assume the lexer source used here is a char array
         parseClassAd(currentSource, classad, false);
         parseRecord(null, classad, out);
     }
 
     public void handleErrorParsing() throws IOException {
-        //TODO: Handle faulty input
     }
 
     private boolean asterixParseClassAd(ClassAd ad) throws IOException {
@@ -208,20 +178,23 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
             tree.reset();
             tt = lexer.consumeToken(tv);
             if (tt == TokenType.LEX_SEMICOLON) {
-                // We allow empty expressions, so if someone give a double semicolon, it doesn't 
-                // hurt. Technically it's not right, but we shouldn't make users pay the price for
-                // a meaningless mistake. See condor-support #1881 for a user that was bitten by this.
+                // We allow empty expressions, so if someone give a double
+                // semicolon, it doesn't
+                // hurt. Technically it's not right, but we shouldn't make users
+                // pay the price for
+                // a meaningless mistake. See condor-support #1881 for a user
+                // that was bitten by this.
                 continue;
             }
             if (tt != TokenType.LEX_IDENTIFIER) {
-                throw new HyracksDataException("while parsing classad:  expected LEX_IDENTIFIER " + " but got "
-                        + Lexer.strLexToken(tt));
+                throw new HyracksDataException(
+                        "while parsing classad:  expected LEX_IDENTIFIER " + " but got " + Lexer.strLexToken(tt));
             }
 
             // consume the intermediate '='
             if ((tt = lexer.consumeToken()) != TokenType.LEX_BOUND_TO) {
-                throw new HyracksDataException("while parsing classad:  expected LEX_BOUND_TO " + " but got "
-                        + Lexer.strLexToken(tt));
+                throw new HyracksDataException(
+                        "while parsing classad:  expected LEX_BOUND_TO " + " but got " + Lexer.strLexToken(tt));
             }
 
             int positionBefore = lexer.getLexSource().getPosition();
@@ -263,9 +236,11 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
                         + "LEX_CLOSE_BOX but got " + Lexer.strLexToken(tt));
             }
 
-            // Slurp up any extra semicolons. This does not duplicate the work at the top of the loop
-            // because it accounts for the case where the last expression has extra semicolons,
-            // while the first case accounts for optional beginning semicolons. 
+            // Slurp up any extra semicolons. This does not duplicate the work
+            // at the top of the loop
+            // because it accounts for the case where the last expression has
+            // extra semicolons,
+            // while the first case accounts for optional beginning semicolons.
             while (tt == TokenType.LEX_SEMICOLON) {
                 lexer.consumeToken();
                 tt = lexer.peekToken();
@@ -274,16 +249,67 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    public void initialize(InputStream in, ARecordType recordType, boolean datasetRec) throws AsterixException,
-            IOException {
+    public void initialize(InputStream in, ARecordType recordType, boolean datasetRec)
+            throws AsterixException, IOException {
         this.recordType = recordType;
         if (oldFormat) {
             this.oldFormatReader = new BufferedReader(new InputStreamReader(in));
         } else {
             this.recordReader = new AsterixSemiStructuredRecordReader('[', ']');
             recordReader.init(null);
-            recordReader.setInputStreamReader(new AsterixInputStreamReader(BaseAsterixInputStream
-                    .createBaseInputStream(in)));
+            recordReader.setInputStreamReader(
+                    new AsterixInputStreamReader(BaseAsterixInputStream.createBaseInputStream(in)));
+        }
+    }
+
+    public static String readLine(char[] buffer, AMutableInt32 offset, int maxOffset) {
+        int position = offset.getIntegerValue();
+        while (buffer[position] != '\n' && position < maxOffset) {
+            position++;
+        }
+        if (offset.getIntegerValue() == position) {
+            return null;
+        }
+        String line = String.valueOf(buffer, offset.getIntegerValue(), position - offset.getIntegerValue());
+        offset.setValue(position);
+        return line;
+    }
+
+    private AMutableInt32 aInt32 = new AMutableInt32(0);
+
+    public boolean parse(IAsterixRecord record, DataOutput out) throws AsterixException, IOException {
+        try {
+            if (oldFormat) {
+                int maxOffset = record.getSize();
+                rootAd.clear();
+                char[] buffer = record.getRecordCharBuffer();
+                aInt32.setValue(0);
+                String line = readLine(buffer, aInt32, maxOffset);
+                while (line != null) {
+                    if (line.trim().length() == 0) {
+                        if (rootAd.size() == 0) {
+                            line = readLine(buffer, aInt32, maxOffset);
+                            continue;
+                        }
+                        break;
+                    } else if (!rootAd.insert(line)) {
+                        throw new HyracksDataException("Couldn't parse expression in line: " + line);
+                    }
+                    line = readLine(buffer, aInt32, maxOffset);
+                }
+                if (rootAd.size() == 0) {
+                    return false;
+                }
+            } else {
+                resetPools();
+                currentSource.setNewSource(record.getRecordCharBuffer());
+                rootAd.reset();
+                asterixParseClassAd(rootAd);
+            }
+            parseRecord(recordType, rootAd, out);
+            return true;
+        } catch (Exception e) {
+            throw new HyracksDataException(e);
         }
     }
 
@@ -325,8 +351,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
     }
 
     /**
-     * Resets the pools before parsing a top-level record.
-     * In this way the elements in those pools can be re-used.
+     * Resets the pools before parsing a top-level record. In this way the
+     * elements in those pools can be re-used.
      */
     private void resetPools() {
         listBuilderPool.reset();
@@ -432,8 +458,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         if (recType != null) {
             int nullableFieldId = checkNullConstraints(recType, nulls);
             if (nullableFieldId != -1) {
-                throw new HyracksDataException("Field: " + recType.getFieldNames()[nullableFieldId]
-                        + " can not be null");
+                throw new HyracksDataException(
+                        "Field: " + recType.getFieldNames()[nullableFieldId] + " can not be null");
             }
         }
         recBuilder.write(out, true);
@@ -548,8 +574,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         }
     }
 
-    private void parseOrderedList(AOrderedListType oltype, Value listVal, DataOutput out) throws IOException,
-            AsterixException {
+    private void parseOrderedList(AOrderedListType oltype, Value listVal, DataOutput out)
+            throws IOException, AsterixException {
         ArrayBackedValueStorage itemBuffer = getTempBuffer();
         OrderedListBuilder orderedListBuilder = (OrderedListBuilder) getOrderedListBuilder();
         IAType itemType = null;
@@ -565,8 +591,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         orderedListBuilder.write(out, true);
     }
 
-    private void parseUnorderedList(AUnorderedListType uoltype, Value listVal, DataOutput out) throws IOException,
-            AsterixException {
+    private void parseUnorderedList(AUnorderedListType uoltype, Value listVal, DataOutput out)
+            throws IOException, AsterixException {
         ArrayBackedValueStorage itemBuffer = getTempBuffer();
         UnorderedListBuilder unorderedListBuilder = (UnorderedListBuilder) getUnorderedListBuilder();
         IAType itemType = null;
@@ -725,14 +751,12 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
      * Parse a ClassAd
      * 
      * @param buffer
-     *            Buffer containing the string representation of the
-     *            classad.
+     *            Buffer containing the string representation of the classad.
      * @param full
-     *            If this parameter is true, the parse is considered to
-     *            succeed only if the ClassAd was parsed successfully and no
-     *            other tokens follow the ClassAd.
-     * @return pointer to the ClassAd object if successful, or null
-     *         otherwise
+     *            If this parameter is true, the parse is considered to succeed
+     *            only if the ClassAd was parsed successfully and no other
+     *            tokens follow the ClassAd.
+     * @return pointer to the ClassAd object if successful, or null otherwise
      * @throws IOException
      */
     public ClassAd parseClassAd(String buffer, boolean full) throws IOException {
@@ -796,14 +820,13 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
      * Parse a ClassAd
      * 
      * @param buffer
-     *            Buffer containing the string representation of the
-     *            classad.
+     *            Buffer containing the string representation of the classad.
      * @param ad
      *            The classad to be populated
      * @param full
-     *            If this parameter is true, the parse is considered to
-     *            succeed only if the ClassAd was parsed successfully and no
-     *            other tokens follow the ClassAd.
+     *            If this parameter is true, the parse is considered to succeed
+     *            only if the ClassAd was parsed successfully and no other
+     *            tokens follow the ClassAd.
      * @return true on success, false on failure
      * @throws IOException
      */
@@ -864,14 +887,12 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
      * Parse an expression
      * 
      * @param buffer
-     *            Buffer containing the string representation of the
-     *            expression.
+     *            Buffer containing the string representation of the expression.
      * @param full
-     *            If this parameter is true, the parse is considered to
-     *            succeed only if the expression was parsed successfully and no
-     *            other tokens are left.
-     * @return pointer to the expression object if successful, or null
-     *         otherwise
+     *            If this parameter is true, the parse is considered to succeed
+     *            only if the expression was parsed successfully and no other
+     *            tokens are left.
+     * @return pointer to the expression object if successful, or null otherwise
      */
     public ExprTree parseExpression(String buffer, boolean full) throws IOException {
         stringLexerSource.setNewSource(buffer);
@@ -911,8 +932,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
     *
     *-------------------------------------------------------------------*/
 
-    //  Expression .= LogicalORExpression
-    //                  | LogicalORExpression '?' Expression ':' Expression
+    // Expression .= LogicalORExpression
+    // | LogicalORExpression '?' Expression ':' Expression
 
     private boolean parseExpression(ExprTreeHolder tree) throws IOException {
         return parseExpression(tree, false);
@@ -943,14 +964,14 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         }
         // if a full parse was requested, ensure that input is exhausted
         if (full && (lexer.consumeToken() != TokenType.LEX_END_OF_INPUT)) {
-            throw new HyracksDataException("expected LEX_END_OF_INPUT on full parse, but got "
-                    + String.valueOf(Lexer.strLexToken(tt)));
+            throw new HyracksDataException(
+                    "expected LEX_END_OF_INPUT on full parse, but got " + String.valueOf(Lexer.strLexToken(tt)));
         }
         return true;
     }
 
-    //  LogicalORExpression .= LogicalANDExpression
-    //                           | LogicalORExpression '||' LogicalANDExpression
+    // LogicalORExpression .= LogicalANDExpression
+    // | LogicalORExpression '||' LogicalANDExpression
 
     private boolean parseLogicalORExpression(ExprTreeHolder tree) throws IOException {
         if (!parseLogicalANDExpression(tree))
@@ -972,8 +993,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  LogicalANDExpression .= InclusiveORExpression
-    //                            | LogicalANDExpression '&&' InclusiveORExpression
+    // LogicalANDExpression .= InclusiveORExpression
+    // | LogicalANDExpression '&&' InclusiveORExpression
     private boolean parseLogicalANDExpression(ExprTreeHolder tree) throws IOException {
         if (!parseInclusiveORExpression(tree))
             return false;
@@ -994,8 +1015,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  InclusiveORExpression .= ExclusiveORExpression
-    //  | InclusiveORExpression '|' ExclusiveORExpression
+    // InclusiveORExpression .= ExclusiveORExpression
+    // | InclusiveORExpression '|' ExclusiveORExpression
     public boolean parseInclusiveORExpression(ExprTreeHolder tree) throws IOException {
         if (!parseExclusiveORExpression(tree))
             return false;
@@ -1016,8 +1037,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  ExclusiveORExpression .= ANDExpression
-    //                             | ExclusiveORExpression '^' ANDExpression
+    // ExclusiveORExpression .= ANDExpression
+    // | ExclusiveORExpression '^' ANDExpression
     private boolean parseExclusiveORExpression(ExprTreeHolder tree) throws IOException {
         if (!parseANDExpression(tree))
             return false;
@@ -1038,8 +1059,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  ANDExpression .= EqualityExpression
-    //                     | ANDExpression '&' EqualityExpression
+    // ANDExpression .= EqualityExpression
+    // | ANDExpression '&' EqualityExpression
     private boolean parseANDExpression(ExprTreeHolder tree) throws IOException {
         if (!parseEqualityExpression(tree))
             return false;
@@ -1060,11 +1081,11 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  EqualityExpression .= RelationalExpression
-    //                          | EqualityExpression '==' RelationalExpression
-    //                          | EqualityExpression '!=' RelationalExpression
-    //                          | EqualityExpression '=?=' RelationalExpression
-    //                          | EqualityExpression '=!=' RelationalExpression
+    // EqualityExpression .= RelationalExpression
+    // | EqualityExpression '==' RelationalExpression
+    // | EqualityExpression '!=' RelationalExpression
+    // | EqualityExpression '=?=' RelationalExpression
+    // | EqualityExpression '=!=' RelationalExpression
     private boolean parseEqualityExpression(ExprTreeHolder tree) throws IOException {
         TokenType tt;
         int op = Operation.OpKind_NO_OP;
@@ -1106,11 +1127,11 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  RelationalExpression .= ShiftExpression
-    //                            | RelationalExpression '<' ShiftExpression
-    //                            | RelationalExpression '>' ShiftExpression
-    //                            | RelationalExpression '<=' ShiftExpression
-    //                            | RelationalExpression '>=' ShiftExpression
+    // RelationalExpression .= ShiftExpression
+    // | RelationalExpression '<' ShiftExpression
+    // | RelationalExpression '>' ShiftExpression
+    // | RelationalExpression '<=' ShiftExpression
+    // | RelationalExpression '>=' ShiftExpression
     private boolean parseRelationalExpression(ExprTreeHolder tree) throws IOException {
         TokenType tt;
         if (!parseShiftExpression(tree))
@@ -1153,9 +1174,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
     }
 
     // ShiftExpression .= AdditiveExpression
-    //                      | ShiftExpression '<<' AdditiveExpression
-    //                      | ShiftExpression '>>' AdditiveExpression
-    //                      | ShiftExpression '>>>' AditiveExpression
+    // | ShiftExpression '<<' AdditiveExpression
+    // | ShiftExpression '>>' AdditiveExpression
+    // | ShiftExpression '>>>' AditiveExpression
     private boolean parseShiftExpression(ExprTreeHolder tree) throws IOException {
         if (!parseAdditiveExpression(tree))
             return false;
@@ -1195,9 +1216,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  AdditiveExpression .= MultiplicativeExpression
-    //                          | AdditiveExpression '+' MultiplicativeExpression
-    //                          | AdditiveExpression '-' MultiplicativeExpression
+    // AdditiveExpression .= MultiplicativeExpression
+    // | AdditiveExpression '+' MultiplicativeExpression
+    // | AdditiveExpression '-' MultiplicativeExpression
     private boolean parseAdditiveExpression(ExprTreeHolder tree) throws IOException {
         if (!parseMultiplicativeExpression(tree))
             return false;
@@ -1210,8 +1231,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
             parseMultiplicativeExpression(treeR);
             if (treeL.getInnerTree() != null && treeR.getInnerTree() != null) {
                 Operation newTree = operationPool.get();
-                Operation.createOperation((tt == TokenType.LEX_PLUS) ? Operation.OpKind_ADDITION_OP
-                        : Operation.OpKind_SUBTRACTION_OP, treeL, treeR, null, newTree);
+                Operation.createOperation(
+                        (tt == TokenType.LEX_PLUS) ? Operation.OpKind_ADDITION_OP : Operation.OpKind_SUBTRACTION_OP,
+                        treeL, treeR, null, newTree);
                 tree.setInnerTree(newTree);
             } else {
                 tree.setInnerTree(null);
@@ -1222,10 +1244,10 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  MultiplicativeExpression .= UnaryExpression
-    //                               |  MultiplicativeExpression '*' UnaryExpression
-    //                               |  MultiplicativeExpression '/' UnaryExpression
-    //                               |  MultiplicativeExpression '%' UnaryExpression
+    // MultiplicativeExpression .= UnaryExpression
+    // | MultiplicativeExpression '*' UnaryExpression
+    // | MultiplicativeExpression '/' UnaryExpression
+    // | MultiplicativeExpression '%' UnaryExpression
     private boolean parseMultiplicativeExpression(ExprTreeHolder tree) throws IOException {
         if (!parseUnaryExpression(tree))
             return false;
@@ -1264,9 +1286,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  UnaryExpression .= PostfixExpression
-    //                       | UnaryOperator UnaryExpression
-    //  ( where UnaryOperator is one of { -, +, ~, ! } )
+    // UnaryExpression .= PostfixExpression
+    // | UnaryOperator UnaryExpression
+    // ( where UnaryOperator is one of { -, +, ~, ! } )
     private boolean parseUnaryExpression(ExprTreeHolder tree) throws IOException {
         TokenType tt = lexer.peekToken();
         if (tt == TokenType.LEX_MINUS || tt == TokenType.LEX_PLUS || tt == TokenType.LEX_BITWISE_NOT
@@ -1305,9 +1327,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         }
     }
 
-    //  PostfixExpression .= PrimaryExpression
-    //                         | PostfixExpression '.' Identifier
-    //                         | PostfixExpression '[' Expression ']'
+    // PostfixExpression .= PrimaryExpression
+    // | PostfixExpression '.' Identifier
+    // | PostfixExpression '[' Expression ']'
     private boolean parsePostfixExpression(ExprTreeHolder tree) throws IOException {
         TokenType tt;
         if (!parsePrimaryExpression(tree))
@@ -1344,13 +1366,14 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  PrimaryExpression .= Identifier
-    //                         | FunctionCall
-    //                         | '.' Identifier
-    //                         | '(' Expression ')'
-    //                         | Literal
-    //  FunctionCall      .= Identifier ArgumentList
-    // ( Constant may be boolean,undefined,error,string,integer,real,classad,list )
+    // PrimaryExpression .= Identifier
+    // | FunctionCall
+    // | '.' Identifier
+    // | '(' Expression ')'
+    // | Literal
+    // FunctionCall .= Identifier ArgumentList
+    // ( Constant may be
+    // boolean,undefined,error,string,integer,real,classad,list )
     // ( ArgumentList non-terminal includes parentheses )
     private boolean parsePrimaryExpression(ExprTreeHolder tree) throws IOException {
         ExprTreeHolder treeL;
@@ -1358,7 +1381,7 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         TokenType tt;
         tree.setInnerTree(null);
         switch ((tt = lexer.peekToken(tv))) {
-        // identifiers
+            // identifiers
             case LEX_IDENTIFIER:
                 isExpr = true;
                 lexer.consumeToken();
@@ -1391,8 +1414,8 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
                     return (tree.size() != 0);
                 }
                 // not an identifier following the '.'
-                throw new HyracksDataException("need identifier in selection expression (got" + Lexer.strLexToken(tt)
-                        + ")");
+                throw new HyracksDataException(
+                        "need identifier in selection expression (got" + Lexer.strLexToken(tt) + ")");
                 // parenthesized expression
             case LEX_OPEN_PAREN: {
                 isExpr = true;
@@ -1406,14 +1429,14 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
 
                 if ((tt = lexer.consumeToken()) != TokenType.LEX_CLOSE_PAREN) {
                     throw new HyracksDataException("exptected LEX_CLOSE_PAREN, but got " + Lexer.strLexToken(tt));
-                    //tree.resetExprTree(null);
-                    //return false;
+                    // tree.resetExprTree(null);
+                    // return false;
                 }
                 // assume make operation will return a new tree
                 tree.setInnerTree(Operation.createOperation(Operation.OpKind_PARENTHESES_OP, treeL));
                 return (tree.size() != 0);
             }
-            // constants
+                // constants
             case LEX_OPEN_BOX: {
                 isExpr = true;
                 ClassAd newAd = classAdPool.get();
@@ -1506,15 +1529,15 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         }
     }
 
-    //  ArgumentList    .= '(' ListOfArguments ')'
-    //  ListOfArguments .= (epsilon)
-    //                       | ListOfArguments ',' Expression
+    // ArgumentList .= '(' ListOfArguments ')'
+    // ListOfArguments .= (epsilon)
+    // | ListOfArguments ',' Expression
     public boolean parseArgumentList(ExprList argList) throws IOException {
         TokenType tt;
         argList.clear();
         if ((tt = lexer.consumeToken()) != TokenType.LEX_OPEN_PAREN) {
             throw new HyracksDataException("expected LEX_OPEN_PAREN but got " + String.valueOf(Lexer.strLexToken(tt)));
-            //return false;
+            // return false;
         }
         tt = lexer.peekToken();
         ExprTreeHolder tree = mutableExprPool.get();
@@ -1535,19 +1558,19 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
                 lexer.consumeToken();
             else if (tt != TokenType.LEX_CLOSE_PAREN) {
                 argList.clear();
-                throw new HyracksDataException("expected LEX_COMMA or LEX_CLOSE_PAREN but got "
-                        + String.valueOf(Lexer.strLexToken(tt)));
-                //return false;
+                throw new HyracksDataException(
+                        "expected LEX_COMMA or LEX_CLOSE_PAREN but got " + String.valueOf(Lexer.strLexToken(tt)));
+                // return false;
             }
         }
         lexer.consumeToken();
         return true;
     }
 
-    //  ClassAd       .= '[' AttributeList ']'
-    //  AttributeList .= (epsilon)
-    //                     | Attribute ';' AttributeList
-    //  Attribute     .= Identifier '=' Expression
+    // ClassAd .= '[' AttributeList ']'
+    // AttributeList .= (epsilon)
+    // | Attribute ';' AttributeList
+    // Attribute .= Identifier '=' Expression
     public boolean parseClassAd(ClassAd ad) throws IOException {
         return parseClassAd(ad, false);
     }
@@ -1570,20 +1593,23 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
             tree.reset();
             tt = lexer.consumeToken(tv);
             if (tt == TokenType.LEX_SEMICOLON) {
-                // We allow empty expressions, so if someone give a double semicolon, it doesn't 
-                // hurt. Technically it's not right, but we shouldn't make users pay the price for
-                // a meaningless mistake. See condor-support #1881 for a user that was bitten by this.
+                // We allow empty expressions, so if someone give a double
+                // semicolon, it doesn't
+                // hurt. Technically it's not right, but we shouldn't make users
+                // pay the price for
+                // a meaningless mistake. See condor-support #1881 for a user
+                // that was bitten by this.
                 continue;
             }
             if (tt != TokenType.LEX_IDENTIFIER) {
-                throw new HyracksDataException("while parsing classad:  expected LEX_IDENTIFIER " + " but got "
-                        + Lexer.strLexToken(tt));
+                throw new HyracksDataException(
+                        "while parsing classad:  expected LEX_IDENTIFIER " + " but got " + Lexer.strLexToken(tt));
             }
 
             // consume the intermediate '='
             if ((tt = lexer.consumeToken()) != TokenType.LEX_BOUND_TO) {
-                throw new HyracksDataException("while parsing classad:  expected LEX_BOUND_TO " + " but got "
-                        + Lexer.strLexToken(tt));
+                throw new HyracksDataException(
+                        "while parsing classad:  expected LEX_BOUND_TO " + " but got " + Lexer.strLexToken(tt));
             }
 
             isExpr = false;
@@ -1605,9 +1631,11 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
                         + "LEX_CLOSE_BOX but got " + Lexer.strLexToken(tt));
             }
 
-            // Slurp up any extra semicolons. This does not duplicate the work at the top of the loop
-            // because it accounts for the case where the last expression has extra semicolons,
-            // while the first case accounts for optional beginning semicolons. 
+            // Slurp up any extra semicolons. This does not duplicate the work
+            // at the top of the loop
+            // because it accounts for the case where the last expression has
+            // extra semicolons,
+            // while the first case accounts for optional beginning semicolons.
             while (tt == TokenType.LEX_SEMICOLON) {
                 lexer.consumeToken();
                 tt = lexer.peekToken();
@@ -1622,9 +1650,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         return true;
     }
 
-    //  ExprList          .= '{' ListOfExpressions '}'
-    //  ListOfExpressions .= (epsilon)
-    //                         | Expression ',' ListOfExpressions
+    // ExprList .= '{' ListOfExpressions '}'
+    // ListOfExpressions .= (epsilon)
+    // | Expression ',' ListOfExpressions
     public boolean parseExprList(ExprList list) throws IOException {
         return parseExprList(list, false);
     }
@@ -1635,9 +1663,9 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
         ExprList loe = new ExprList();
 
         if ((tt = lexer.consumeToken()) != TokenType.LEX_OPEN_BRACE) {
-            throw new HyracksDataException("while parsing expression list:  expected LEX_OPEN_BRACE" + " but got "
-                    + Lexer.strLexToken(tt));
-            //return false;
+            throw new HyracksDataException(
+                    "while parsing expression list:  expected LEX_OPEN_BRACE" + " but got " + Lexer.strLexToken(tt));
+            // return false;
         }
         tt = lexer.peekToken();
         while (tt != TokenType.LEX_CLOSE_BRACE) {
@@ -1758,5 +1786,47 @@ public class ClassAdParser extends AbstractDataParser implements IDataParser {
 
     public Literal getLiteral() {
         return literalPool.get();
+    }
+
+    public InputDataFormat getInputDataFormat() {
+        return InputDataFormat.ADM;
+    }
+
+    public void removeInputStream() {
+    }
+
+    public void setInputStream(Reader reader, char[] buffer) throws IOException {
+        throw new IOException("not implemented");
+    }
+
+    public void configure(Map<String, String> configuration) {
+        String parserConfig = configuration.get(KEY_OLD_FORMAT);
+        if (parserConfig != null && parserConfig.equalsIgnoreCase("true")) {
+            oldFormat = true;
+            rootAd.createParser();
+        }
+        parserConfig = configuration.get(KEY_EVALUATE);
+        if (parserConfig != null && parserConfig.equalsIgnoreCase("false")) {
+            evaluateExpr = false;
+            keepBoth = false;
+        }
+        parserConfig = configuration.get(KEY_KEEP_EXPR);
+        if (parserConfig != null && parserConfig.equalsIgnoreCase("false")) {
+            keepBoth = false;
+            evaluateExpr = true;
+        }
+        parserConfig = configuration.get(KEY_EXPR_PREFIX);
+        if (parserConfig != null && parserConfig.trim().length() > 0) {
+            exprPrefix = parserConfig;
+        }
+        parserConfig = configuration.get(KEY_EXPR_SUFFIX);
+        if (parserConfig != null && parserConfig.trim().length() > 0) {
+            exprSuffix = parserConfig;
+        }
+        parserConfig = configuration.get(KEY_EXPR_NAME_SUFFIX);
+        if (parserConfig != null && parserConfig.trim().length() > 0) {
+            exprFieldNameSuffix = parserConfig;
+        }
+
     }
 }

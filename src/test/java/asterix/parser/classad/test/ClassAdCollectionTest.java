@@ -9,9 +9,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import asterix.parser.classad.ClassAd;
+import org.apache.asterix.om.base.AMutableInt32;
 
-import edu.uci.ics.asterix.om.base.AMutableInt32;
+import asterix.parser.classad.ClassAd;
 
 public class ClassAdCollectionTest {
     public class Parameters {
